@@ -1,0 +1,57 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.dist-info/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# ── Secrets — NEVER commit these ──────────────────────────────────────────────
+.env
+server/.env
+**/.env
+*.key
+*.pem
+*.p12
+*.pfx
+secrets.json
+credentials.json
+
+# ── Server artefacts ──────────────────────────────────────────────────────────
+server/output.txt
+server/__pycache__/
+server/venv/
+
+# ── Node / Client ─────────────────────────────────────────────────────────────
+node_modules/
+client/node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# ── OS & Editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.suo
+*.sw?
+
+# ── Claude Code internal ──────────────────────────────────────────────────────
+.claude/
+prompt.txt

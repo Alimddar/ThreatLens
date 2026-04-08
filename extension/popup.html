@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ThreatLens</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+<div class="tl-app">
+
+  <!-- ══════════════════════════════════════════════════
+       HEADER
+       ══════════════════════════════════════════════════ -->
+  <header class="tl-header">
+    <div class="tl-brand">
+      <div class="tl-logo-box">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+          <path fill-rule="evenodd"
+            d="M12 1.5a.75.75 0 01.696.47l2.25 5.21 5.68.521a.75.75 0 01.416 1.317l-4.13 3.587 1.108 5.39a.75.75 0 01-1.085.82L12 15.875l-4.935 3.439a.75.75 0 01-1.085-.82l1.108-5.39L2.958 9.018a.75.75 0 01.416-1.317l5.68-.521L11.304 1.97A.75.75 0 0112 1.5z"
+            clip-rule="evenodd" />
+        </svg>
+      </div>
+      <div>
+        <div class="tl-brand-name">ThreatLens</div>
+        <div class="tl-brand-sub">SOC Intelligence</div>
+      </div>
+    </div>
+    <div class="tl-status">
+      <span class="status-dot status-dot--inactive" id="status-dot"></span>
+      <span class="status-label" id="status-text">Connecting…</span>
+    </div>
+  </header>
+
+  <!-- ══════════════════════════════════════════════════
+       MAIN SCROLL AREA
+       ══════════════════════════════════════════════════ -->
+  <main class="tl-main">
+
+    <!-- ── NOT ON GMAIL WARNING ───────────────────── -->
+    <div id="not-gmail-warning" class="tl-warning hidden">
+      <div class="tl-warning-emoji">⚠️</div>
+      <p class="tl-warning-title">Not on Gmail</p>
+      <p class="tl-warning-body">
+        Navigate to <span class="hi">mail.google.com</span> and open an email to begin analysis.
+      </p>
+    </div>
+
+    <!-- ── CURRENT EMAIL CARD ─────────────────────── -->
+    <section class="tl-card">
+      <div class="tl-card-header">
+        <span class="tl-card-title">Current Email</span>
+        <button class="tl-icon-btn" id="btn-refresh" title="Re-read email metadata">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 4v5h5M20 20v-5h-5" />
+            <path d="M4 9a9 9 0 0115-2.56M20 15a9 9 0 01-15 2.56" />
+          </svg>
+        </button>
+      </div>
+
+      <div class="tl-sender-row">
+        <div class="tl-avatar">
+          <span class="tl-avatar-initial" id="sender-initial">?</span>
+        </div>
+        <div class="tl-sender-info">
+          <div class="tl-sender-name" id="sender-name">— awaiting scan —</div>
+          <div class="tl-sender-email" id="sender-email">&nbsp;</div>
+        </div>
+      </div>
+
+      <div class="tl-subject-box">
+        <div class="tl-subject-label">Subject</div>
+        <div class="tl-subject-text" id="email-subject">
+          Open an email in Gmail, then click "Deep Scan" below.
+        </div>
+      </div>
+
+      <div class="tl-meta-row">
+        <div class="tl-stat">
+          <div class="tl-stat-label">Words</div>
+          <div class="tl-stat-value" id="word-count">—</div>
+        </div>
+        <div class="tl-stat">
+          <div class="tl-stat-label">Links</div>
+          <div class="tl-stat-value" id="link-count">—</div>
+        </div>
+        <div class="tl-stat">
+          <div class="tl-stat-label">Time</div>
+          <div class="tl-stat-value sm" id="extract-time">—</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── SCAN BUTTON ─────────────────────────────── -->
+    <button class="tl-btn-scan" id="btn-scan">
+      <svg id="scan-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="2.5"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.955 11.955 0 003 10c0 5.592 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.57-.598-3.75h-.152c-3.196 0-6.1-1.249-8.25-3.286z" />
+      </svg>
+      <div class="tl-spinner hidden" id="scan-spinner"></div>
+      <span id="btn-scan-text">Deep Scan Email</span>
+    </button>
+
+    <!-- ── RESULTS SECTION ─────────────────────────── -->
+    <section id="results-section" class="tl-results hidden">
+
+      <!-- Threat Level Banner -->
+      <div id="threat-banner" class="tl-threat-banner">
+        <div class="tl-threat-emoji" id="threat-icon">🛡️</div>
+        <div class="tl-threat-info">
+          <div class="tl-threat-sub">Threat Assessment</div>
+          <div class="tl-threat-level" id="threat-level-text">—</div>
+        </div>
+        <span id="threat-badge" class="tl-threat-badge">—</span>
+      </div>
+
+      <!-- AI Analysis Card -->
+      <div class="tl-card tl-ai-card">
+        <div class="tl-ai-header">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+            <path fill-rule="evenodd"
+              d="M9 4.5a.75.75 0 01.721.544l.813 2.846a3.75 3.75 0 002.576 2.576l2.846.813a.75.75 0 010 1.442l-2.846.813a3.75 3.75 0 00-2.576 2.576l-.813 2.846a.75.75 0 01-1.442 0l-.813-2.846a3.75 3.75 0 00-2.576-2.576l-2.846-.813a.75.75 0 010-1.442l2.846-.813A3.75 3.75 0 007.466 7.89l.813-2.846A.75.75 0 019 4.5zM18 1.5a.75.75 0 01.728.568l.258 1.036c.236.94.97 1.674 1.91 1.91l1.036.258a.75.75 0 010 1.456l-1.036.258c-.94.236-1.674.97-1.91 1.91l-.258 1.036a.75.75 0 01-1.456 0l-.258-1.036a2.625 2.625 0 00-1.91-1.91l-1.036-.258a.75.75 0 010-1.456l1.036-.258a2.625 2.625 0 001.91-1.91l.258-1.036A.75.75 0 0118 1.5z"
+              clip-rule="evenodd" />
+          </svg>
+          <span class="tl-ai-title">AI Analysis</span>
+          <span class="tl-confidence-badge hidden" id="ai-confidence-badge">—</span>
+        </div>
+
+        <div id="ai-idle" class="tl-ai-placeholder">
+          <p>Deep scan an email to get a full SOC intelligence briefing.</p>
+        </div>
+
+        <div id="ai-loading" class="tl-ai-loading hidden">
+          <div class="tl-ai-loading-row">
+            <div class="tl-spinner"></div>
+            <span>Running SOC intelligence checks…</span>
+          </div>
+          <div class="tl-ai-steps">
+            <span id="ai-step-vt"    class="tl-ai-step">🔍 VirusTotal</span>
+            <span id="ai-step-whois" class="tl-ai-step">🌐 WHOIS/DNS</span>
+            <span id="ai-step-feeds" class="tl-ai-step">🛡️ Threat Feeds</span>
+            <span id="ai-step-llm"   class="tl-ai-step">✨ AI Analysis</span>
+          </div>
+        </div>
+
+        <div id="ai-result" class="hidden">
+          <p id="ai-summary-text" class="tl-ai-summary"></p>
+
+          <div class="tl-findings-block" id="ai-findings-block">
+            <div class="tl-findings-label">Key Findings</div>
+            <ul class="tl-findings-list" id="ai-findings-list"></ul>
+          </div>
+
+          <div class="tl-action-box" id="ai-action-box">
+            <span class="tl-action-label">Recommended Action</span>
+            <p class="tl-action-text" id="ai-action-text"></p>
+          </div>
+        </div>
+
+        <div id="ai-error" class="hidden">
+          <div class="tl-ai-warn">
+            <span class="tl-ai-warn-icon">⚠️</span>
+            <p id="ai-error-text" class="tl-ai-warn-msg">Server unavailable. Start the backend to enable AI analysis.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SOC INTELLIGENCE SECTIONS ─────────────── -->
+      <div id="soc-sections" class="hidden">
+
+        <!-- Intelligence Summary Row -->
+        <div class="tl-intel-summary-row" id="intel-summary-row"></div>
+
+        <!-- Hash Values -->
+        <details class="tl-intel-card" open>
+          <summary class="tl-intel-summary">
+            <span class="tl-intel-icon">🔐</span>
+            <span class="tl-intel-label">Email Hashes</span>
+            <svg class="tl-raw-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </summary>
+          <div class="tl-intel-body" id="hash-section">
+            <div class="tl-hash-row">
+              <span class="tl-hash-label">MD5</span>
+              <code class="tl-hash-value" id="hash-md5">—</code>
+            </div>
+            <div class="tl-hash-row">
+              <span class="tl-hash-label">SHA-1</span>
+              <code class="tl-hash-value" id="hash-sha1">—</code>
+            </div>
+            <div class="tl-hash-row">
+              <span class="tl-hash-label">SHA-256</span>
+              <code class="tl-hash-value" id="hash-sha256">—</code>
+            </div>
+            <div class="tl-mb-result hidden" id="mb-result">
+              <span class="tl-mb-badge tl-mb-badge--hit">MalwareBazaar Hit</span>
+              <span class="tl-mb-detail" id="mb-detail"></span>
+            </div>
+          </div>
+        </details>
+
+        <!-- Domain Intelligence -->
+        <details class="tl-intel-card" open>
+          <summary class="tl-intel-summary">
+            <span class="tl-intel-icon">🌐</span>
+            <span class="tl-intel-label">Domain Intelligence</span>
+            <svg class="tl-raw-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </summary>
+          <div class="tl-intel-body" id="domain-intel-list"></div>
+        </details>
+
+        <!-- IP Reputation -->
+        <details class="tl-intel-card">
+          <summary class="tl-intel-summary">
+            <span class="tl-intel-icon">📡</span>
+            <span class="tl-intel-label">IP Reputation</span>
+            <svg class="tl-raw-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </summary>
+          <div class="tl-intel-body" id="ip-rep-list"></div>
+        </details>
+
+        <!-- Threat Feeds (PhishTank + OTX) -->
+        <details class="tl-intel-card">
+          <summary class="tl-intel-summary">
+            <span class="tl-intel-icon">🛡️</span>
+            <span class="tl-intel-label">Threat Feeds</span>
+            <svg class="tl-raw-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </summary>
+          <div class="tl-intel-body" id="threat-feeds-list"></div>
+        </details>
+
+        <!-- URLScan Reports -->
+        <details class="tl-intel-card">
+          <summary class="tl-intel-summary">
+            <span class="tl-intel-icon">🔭</span>
+            <span class="tl-intel-label">URLScan Reports</span>
+            <svg class="tl-raw-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+                 fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </summary>
+          <div class="tl-intel-body" id="urlscan-list"></div>
+        </details>
+
+      </div><!-- /soc-sections -->
+
+      <!-- Extracted Links -->
+      <div id="links-section" class="tl-card hidden">
+        <div class="tl-links-header">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+          </svg>
+          <span class="tl-links-title">Embedded Links</span>
+          <span class="tl-links-count" id="links-count-badge">0</span>
+        </div>
+        <ul class="tl-links-list" id="links-list"></ul>
+      </div>
+
+      <!-- Raw Data -->
+      <details class="tl-raw">
+        <summary>
+          <div class="tl-raw-left">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="16 18 22 12 16 6" />
+              <polyline points="8 6 2 12 8 18" />
+            </svg>
+            <span class="tl-raw-heading">Raw Extracted Data</span>
+          </div>
+          <svg class="tl-raw-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+               fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </summary>
+        <div class="tl-raw-body">
+          <pre class="tl-raw-pre" id="raw-json">No data yet.</pre>
+        </div>
+      </details>
+
+    </section>
+
+    <!-- ── SCAN HISTORY ──────────────────────────── -->
+    <details class="tl-history-panel" id="history-panel">
+      <summary class="tl-history-summary">
+        <span class="tl-history-icon">🕒</span>
+        <span class="tl-history-label">Scan History</span>
+        <span class="tl-history-count hidden" id="history-count-badge">0</span>
+        <button class="tl-history-clear-btn hidden" id="btn-clear-history" title="Clear all history">
+          Clear
+        </button>
+        <svg class="tl-raw-chevron" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+             fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </summary>
+      <div class="tl-history-body" id="history-list">
+        <p class="tl-intel-empty">No scans yet.</p>
+      </div>
+    </details>
+
+    <!-- ── ERROR CARD ─────────────────────────────── -->
+    <div id="error-card" class="tl-error hidden">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+        <path fill-rule="evenodd"
+          d="M9.401 3.003c1.155-2 4.043-2 5.197 0l7.355 12.748c1.154 2-.29 4.5-2.599 4.5H4.645c-2.309 0-3.752-2.5-2.598-4.5L9.4 3.003zM12 8.25a.75.75 0 01.75.75v3.75a.75.75 0 01-1.5 0V9a.75.75 0 01.75-.75zm0 8.25a.75.75 0 100-1.5.75.75 0 000 1.5z"
+          clip-rule="evenodd" />
+      </svg>
+      <div>
+        <div class="tl-error-title">Extraction Failed</div>
+        <div class="tl-error-msg" id="error-message"></div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ══════════════════════════════════════════════════
+       FOOTER
+       ══════════════════════════════════════════════════ -->
+  <footer class="tl-footer">
+    <span class="tl-footer-left">ThreatLens v3.0 &nbsp;•&nbsp; SOC Intelligence</span>
+    <div class="tl-footer-right">
+      <span>Powered by</span>
+      <span class="accent">AI</span>
+    </div>
+  </footer>
+
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>
