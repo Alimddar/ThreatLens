@@ -147,7 +147,9 @@ function App() {
       <footer className="footer container">
         <p>ThreatLens Dashboard v3.0 &bull; Built for advanced email security.</p>
         <p style={{ marginTop: "0.5rem" }}>
-          View source on <a href="https://github.com/Alimddar/ThreatLens" target="_blank" rel="noreferrer">GitHub</a>.
+          View source on <a href="https://github.com/Alimddar/ThreatLens" target="_blank" rel="noreferrer">GitHub</a>
+          {" "}&bull;{" "}
+          Explore the <a href="https://threat-lens-vie2.vercel.app/docs" target="_blank" rel="noreferrer">API Docs</a>
         </p>
       </footer>
     </>
