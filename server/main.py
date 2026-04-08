@@ -143,6 +143,7 @@ class GeoRepInfo(BaseModel):
 
 class DnsInfo(BaseModel):
     domain:     str
+    auth_domain: Optional[str] = None
     has_spf:    bool = False
     has_dmarc:  bool = False
     mx_records: list[str] = []
@@ -225,10 +226,62 @@ class AnalysisResponse(BaseModel):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def normalize_domain(domain: Optional[str]) -> Optional[str]:
+    if not domain:
+        return None
+    domain = domain.strip().lower().rstrip(".")
+    if domain.startswith("www."):
+        domain = domain[4:]
+    return domain or None
+
+
+_MULTIPART_PUBLIC_SUFFIXES = {
+    "co.uk", "org.uk", "gov.uk", "ac.uk",
+    "com.au", "net.au", "org.au",
+    "co.nz", "com.br", "com.tr",
+}
+_TRUSTED_ROOT_DOMAINS = {
+    "google.com",
+    "gmail.com",
+    "googleapis.com",
+    "googleusercontent.com",
+    "gstatic.com",
+    "youtube.com",
+    "spotify.com",
+    "scdn.co",
+    "microsoft.com",
+    "office.com",
+    "live.com",
+    "apple.com",
+    "amazon.com",
+    "paypal.com",
+}
+
+
+def get_registered_domain(domain: Optional[str]) -> Optional[str]:
+    domain = normalize_domain(domain)
+    if not domain:
+        return None
+
+    labels = domain.split(".")
+    if len(labels) <= 2:
+        return domain
+
+    suffix = ".".join(labels[-2:])
+    if suffix in _MULTIPART_PUBLIC_SUFFIXES and len(labels) >= 3:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def is_trusted_domain(domain: Optional[str]) -> bool:
+    root = get_registered_domain(domain)
+    return bool(root and root in _TRUSTED_ROOT_DOMAINS)
+
+
 def extract_domain(url: str) -> Optional[str]:
     try:
         parsed = httpx.URL(url)
-        return parsed.host.lstrip("www.") if parsed.host else None
+        return normalize_domain(parsed.host)
     except Exception:
         return None
 
@@ -247,6 +300,24 @@ def url_to_vt_id(url: str) -> str:
     return base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
 
 
+def classify_vt_scan(url: str, malicious: int, suspicious: int, harmless: int) -> tuple[bool, bool]:
+    domain = extract_domain(url)
+    trusted = is_trusted_domain(domain)
+
+    if malicious >= 2:
+        return True, True
+
+    if malicious == 1:
+        if trusted and suspicious == 0 and harmless >= 5:
+            return False, False
+        return False, True
+
+    if suspicious >= 2:
+        return False, True
+
+    return False, False
+
+
 async def vt_scan_single(client: httpx.AsyncClient, url: str) -> LinkScan:
     headers = {"x-apikey": get_key("VIRUS_TOTAL_API_KEY"), "accept": "application/json"}
     vt_id   = url_to_vt_id(url)
@@ -262,11 +333,12 @@ async def vt_scan_single(client: httpx.AsyncClient, url: str) -> LinkScan:
             susp = stats.get("suspicious", 0)
             harm = stats.get("harmless",   0)
             unde = stats.get("undetected", 0)
+            is_malicious, is_suspicious = classify_vt_scan(url, mal, susp, harm)
             return LinkScan(
                 url=url, malicious=mal, suspicious=susp,
                 harmless=harm, undetected=unde,
                 total=mal+susp+harm+unde,
-                is_malicious=mal > 0, is_suspicious=susp > 1, status="ok",
+                is_malicious=is_malicious, is_suspicious=is_suspicious, status="ok",
             )
         if resp.status_code == 404:
             await client.post(
@@ -382,16 +454,33 @@ async def get_dns_info(client: httpx.AsyncClient, domain: str) -> DnsInfo:
             return []
 
     try:
-        spf_records   = await doh_query(domain, "TXT")
-        dmarc_records = await doh_query(f"_dmarc.{domain}", "TXT")
-        mx_records    = await doh_query(domain, "MX")
+        async def query_dns(target_domain: str) -> tuple[Optional[str], Optional[str], list[str]]:
+            spf_records   = await doh_query(target_domain, "TXT")
+            dmarc_records = await doh_query(f"_dmarc.{target_domain}", "TXT")
+            mx_records    = await doh_query(target_domain, "MX")
+            spf_txt   = next((r for r in spf_records   if "v=spf1"   in r), None)
+            dmarc_txt = next((r for r in dmarc_records if "v=DMARC1" in r), None)
+            mx_hosts  = [r.split(" ", 1)[-1].rstrip(".") for r in mx_records][:5]
+            return spf_txt, dmarc_txt, mx_hosts
 
-        spf_txt   = next((r for r in spf_records   if "v=spf1"   in r), None)
-        dmarc_txt = next((r for r in dmarc_records if "v=DMARC1" in r), None)
-        mx_hosts  = [r.split(" ", 1)[-1].rstrip(".") for r in mx_records][:5]
+        auth_domain = domain
+        spf_txt, dmarc_txt, mx_hosts = await query_dns(domain)
+
+        base_domain = get_registered_domain(domain)
+        if base_domain and base_domain != domain and (spf_txt is None or dmarc_txt is None):
+            base_spf, base_dmarc, base_mx = await query_dns(base_domain)
+            if spf_txt is None and base_spf is not None:
+                spf_txt = base_spf
+                auth_domain = base_domain
+            if dmarc_txt is None and base_dmarc is not None:
+                dmarc_txt = base_dmarc
+                auth_domain = base_domain
+            if not mx_hosts and base_mx:
+                mx_hosts = base_mx
 
         return DnsInfo(
             domain       = domain,
+            auth_domain  = auth_domain,
             has_spf      = spf_txt is not None,
             has_dmarc    = dmarc_txt is not None,
             mx_records   = mx_hosts,
@@ -615,31 +704,52 @@ async def check_threatfox(client: httpx.AsyncClient, indicator: str, ioc_type: s
 
 # Patterns that should never reach an external AI model.
 # URLs and email addresses are intentionally kept — they're the threat signals.
+_CARD_NUMBER_PATTERN = re.compile(r'\b(?:\d[ -]?){13,19}\b')
 _PII_RULES: list[tuple[re.Pattern, str]] = [
-    # Credit / debit card numbers  (13–19 digits, optionally separated by spaces/dashes)
-    (re.compile(r'\b(?:\d[ -]?){13,19}\b'), "[CARD_NUMBER]"),
     # Social Security Number  (US)
     (re.compile(r'\b\d{3}[- ]\d{2}[- ]\d{4}\b'), "[SSN]"),
-    # UK / EU IBAN
-    (re.compile(r'\b[A-Z]{2}\d{2}[A-Z0-9 ]{1,30}\b'), "[IBAN]"),
-    # Routing + account number pairs  (ABA format)
-    (re.compile(r'\b\d{9}\b(?=.*\baccount\b)', re.IGNORECASE), "[ROUTING_NUMBER]"),
+    # Contextual IBAN labels only — avoids redacting random uppercase IDs
+    (re.compile(r'(?i)\b(iban)\b\s*[:#-]?\s*[A-Z]{2}\d{2}[A-Z0-9 ]{10,30}\b'), r'\1: [IBAN]'),
+    # Routing / account labels only
+    (re.compile(r'(?i)\b(routing(?:\s+number)?|aba)\b\s*[:#-]?\s*\d{9}\b'), r'\1: [ROUTING_NUMBER]'),
+    (re.compile(r'(?i)\b(account(?:\s+number)?)\b\s*[:#-]?\s*\d{4,17}\b'), r'\1: [ACCOUNT_NUMBER]'),
     # CVV / CVC codes
-    (re.compile(r'\b(?:cvv|cvc|cvv2|cvc2|security code)\s*[:\-]?\s*\d{3,4}\b',
-                re.IGNORECASE), "[CVV]"),
+    (re.compile(r'(?i)\b(cvv|cvc|cvv2|cvc2|security code)\b\s*[:\-]?\s*\d{3,4}\b'), r'\1: [CVV]'),
     # Phone numbers  (various international formats)
-    (re.compile(r'\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b'),
-     "[PHONE]"),
+    (re.compile(r'\b(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b'), "[PHONE]"),
     # Inline passwords / secrets / tokens / API keys
     (re.compile(
         r'(?i)(password|passwd|pwd|passphrase|secret|token|api[_\-]?key|'
         r'access[_\-]?key|private[_\-]?key)\s*[:=]\s*\S+'),
      r'\1: [REDACTED]'),
-    # Passport numbers  (simplistic: letter + 8 digits)
-    (re.compile(r'\b[A-Z]\d{8}\b'), "[PASSPORT]"),
-    # Date-of-birth patterns  (dd/mm/yyyy or mm-dd-yyyy etc.)
-    (re.compile(r'\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}\b'), "[DATE_OF_BIRTH]"),
+    # Passport numbers only when explicitly labeled
+    (re.compile(r'(?i)\b(passport(?:\s+(?:no|number))?)\b\s*[:#-]?\s*[A-Z0-9]{6,12}\b'), r'\1: [PASSPORT]'),
+    # Date of birth only when explicitly labeled
+    (re.compile(r'(?i)\b(date of birth|dob|birth date)\b\s*[:#-]?\s*\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b'),
+     r'\1: [DATE_OF_BIRTH]'),
 ]
+
+
+def _is_likely_card_number(value: str) -> bool:
+    digits = re.sub(r"\D", "", value)
+    if len(digits) < 13 or len(digits) > 19:
+        return False
+
+    checksum = 0
+    parity = len(digits) % 2
+    for index, char in enumerate(digits):
+        digit = int(char)
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        checksum += digit
+    return checksum % 10 == 0
+
+
+def _redact_card_number(match: re.Match) -> str:
+    value = match.group(0)
+    return "[CARD_NUMBER]" if _is_likely_card_number(value) else value
 
 
 def sanitize_for_ai(text: str) -> str:
@@ -647,6 +757,7 @@ def sanitize_for_ai(text: str) -> str:
     Removes PII and credentials from email body before sending to Claude.
     URLs and email addresses are preserved — they are the threat indicators.
     """
+    text = _CARD_NUMBER_PATTERN.sub(_redact_card_number, text)
     for pattern, replacement in _PII_RULES:
         text = pattern.sub(replacement, text)
     return text
@@ -673,6 +784,7 @@ def build_vt_summary(scans: list[LinkScan]) -> str:
 
 
 def build_intel_summary(
+    sender_domain: Optional[str],
     whois_list:   list[WhoisInfo],
     dns_list:     list[DnsInfo],
     geo_list:     list[GeoRepInfo],
@@ -682,21 +794,52 @@ def build_intel_summary(
     mb_results:   list[MalwareBazaarResult],
 ) -> str:
     lines = []
-    for w in whois_list:
-        if w.error:
-            continue
-        flag = " [NEW DOMAIN < 30 days]" if w.is_new else ""
-        lines.append(f"WHOIS {w.domain}: registrar={w.registrar}, age={w.age_days}d, country={w.country}{flag}")
+    sender_domain = normalize_domain(sender_domain)
 
-    for d in dns_list:
-        if d.error:
+    sender_whois = next(
+        (w for w in whois_list if normalize_domain(w.domain) == sender_domain and not w.error),
+        None,
+    )
+    sender_dns = next(
+        (d for d in dns_list if normalize_domain(d.domain) == sender_domain and not d.error),
+        None,
+    )
+
+    if sender_whois:
+        flag = " [NEW DOMAIN < 30 days]" if sender_whois.is_new else ""
+        lines.append(
+            f"Sender WHOIS {sender_whois.domain}: registrar={sender_whois.registrar}, "
+            f"age={sender_whois.age_days}d, country={sender_whois.country}{flag}"
+        )
+
+    if sender_dns:
+        auth_scope = f" via {sender_dns.auth_domain}" if sender_dns.auth_domain and sender_dns.auth_domain != sender_dns.domain else ""
+        lines.append(
+            f"Sender DNS {sender_dns.domain}{auth_scope}: "
+            f"SPF={'yes' if sender_dns.has_spf else 'MISSING'}, "
+            f"DMARC={'yes' if sender_dns.has_dmarc else 'MISSING'}, "
+            f"MX={sender_dns.mx_records}"
+        )
+
+    for w in whois_list:
+        if w.error or normalize_domain(w.domain) == sender_domain or not w.is_new:
             continue
-        lines.append(f"DNS {d.domain}: SPF={'yes' if d.has_spf else 'MISSING'}, DMARC={'yes' if d.has_dmarc else 'MISSING'}, MX={d.mx_records}")
+        lines.append(
+            f"Link WHOIS {w.domain}: registrar={w.registrar}, age={w.age_days}d, "
+            f"country={w.country} [NEW DOMAIN < 30 days]"
+        )
 
     for g in geo_list:
-        proxy_flag = " [PROXY/HOSTING]" if g.is_proxy else ""
-        abuse_flag = f" [ABUSE SCORE: {g.abuse_score}]" if g.abuse_score and g.abuse_score > 20 else ""
-        lines.append(f"GeoIP {g.ip}: {g.country}, {g.org}{proxy_flag}{abuse_flag}")
+        if g.error:
+            continue
+        flags = []
+        if g.is_tor:
+            flags.append("TOR")
+        if g.abuse_score and g.abuse_score >= 60:
+            flags.append(f"ABUSE SCORE: {g.abuse_score}")
+        if not flags:
+            continue
+        lines.append(f"GeoIP {g.ip}: {g.country}, {g.org} [{' | '.join(flags)}]")
 
     for u in urlhaus_list:
         if u.is_malicious or u.status in ("online", "offline"):
@@ -725,8 +868,9 @@ def analyze_with_claude(
 ) -> dict:
     client = anthropic.Anthropic(api_key=get_key("ANTHROPIC_API_KEY"))
 
-    vt_block     = build_vt_summary(scans)
-    body_excerpt = sanitize_for_ai(payload.body)[:2500]   # PII stripped before AI
+    vt_block      = build_vt_summary(scans)
+    body_excerpt  = sanitize_for_ai(payload.body)[:2500]   # PII stripped before AI
+    sender_domain = normalize_domain(payload.sender.email.split("@")[-1] if "@" in payload.sender.email else None)
 
     prompt = f"""You are ThreatLens, an AI cybersecurity analyst embedded in a Chrome extension.
 Your audience is non-technical executives who need clear, actionable guidance — no jargon.
@@ -735,6 +879,7 @@ Analyze the following email, VirusTotal results, and SOC intelligence, then resp
 
 ━━━ EMAIL ━━━
 From:     {payload.sender.name} <{payload.sender.email}>
+Sender domain: {sender_domain or "unknown"}
 Subject:  {payload.subject}
 Words:    {payload.wordCount}
 Links:    {payload.linkCount}
@@ -767,9 +912,14 @@ SHA-256:{hashes.sha256}
 }}
 
 Rules:
-- threat_level MALICIOUS if any VT scan is malicious, PhishTank confirms phishing, MalwareBazaar hit, or strong phishing indicators.
-- threat_level SUSPICIOUS if suspicious VT, new domain (<30 days), missing SPF/DMARC, urgency language, ThreatFox/URLhaus hits.
+- Redaction placeholders such as [CARD_NUMBER], [PHONE], [IBAN], [PASSPORT], and [DATE_OF_BIRTH] are privacy filters, not threat indicators.
+- threat_level MALICIOUS only if concrete evidence supports it: any VT scan is malicious, PhishTank confirms phishing, MalwareBazaar hit, URLhaus reports an active malicious URL, or there are multiple strong phishing indicators tied to this email.
+- threat_level SUSPICIOUS if suspicious VT, new domain (<30 days), urgency language, ThreatFox/URLhaus hits.
 - threat_level SAFE only if all checks clean and no red flags.
+- CRITICAL: If you determine the email is from a legitimate company or is a genuine onboarding/marketing email, you MUST return SAFE ("No threat detected"). Do NOT mark it SUSPICIOUS just because it uses click-trackers, lacks SPF/DMARC, or has a single low-consensus suspicious security hit.
+- Do NOT mark the email SUSPICIOUS solely because of missing SPF/DMARC.
+- Do NOT mark the email MALICIOUS solely because of sanitized placeholders, common account-security wording, clean link-tracking URLs, or cloud/hosting infrastructure used by major providers.
+- If evidence is weak, mixed, or incomplete, prefer SUSPICIOUS over MALICIOUS.
 - Keep summary under 60 words. No jargon.
 - key_findings must be specific to THIS email.
 - recommended_action: one decisive sentence.
@@ -787,6 +937,97 @@ Rules:
     if start == -1 or end == 0:
         raise ValueError(f"Claude returned no JSON: {raw[:200]}")
     return json.loads(raw[start:end])
+
+
+def calibrate_ai_analysis(
+    payload: EmailPayload,
+    analysis: dict,
+    scans: list[LinkScan],
+    whois_list: list[WhoisInfo],
+    dns_list: list[DnsInfo],
+    urlhaus_list: list[UrlhausResult],
+    tf_list: list[ThreatFoxResult],
+    pt_list: list[PhishTankResult],
+    mb_result: MalwareBazaarResult,
+) -> dict:
+    calibrated = dict(analysis)
+    level = str(calibrated.get("threat_level", "SUSPICIOUS")).upper()
+    if level not in {"SAFE", "SUSPICIOUS", "MALICIOUS"}:
+        level = "SUSPICIOUS"
+
+    try:
+        confidence = float(calibrated.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+
+    sender_domain = normalize_domain(payload.sender.email.split("@")[-1] if "@" in payload.sender.email else None)
+    sender_root = get_registered_domain(sender_domain)
+    sender_whois = next(
+        (w for w in whois_list if normalize_domain(w.domain) == sender_domain and not w.error),
+        None,
+    )
+    sender_dns = next(
+        (d for d in dns_list if normalize_domain(d.domain) == sender_domain and not d.error),
+        None,
+    )
+    trusted_sender = is_trusted_domain(sender_domain)
+    trusted_or_related_links = [
+        s for s in scans
+        if (
+            is_trusted_domain(extract_domain(s.url)) or
+            get_registered_domain(extract_domain(s.url)) == sender_root
+        )
+    ]
+
+    confirmed_malicious = (
+        any(s.is_malicious for s in scans) or
+        any(p.is_phishing for p in pt_list) or
+        any(u.is_malicious for u in urlhaus_list) or
+        mb_result.found
+    )
+    link_suspicious = any(s.is_suspicious for s in scans)
+    suspicious_signals = (
+        link_suspicious or
+        any(t.hit for t in tf_list) or
+        any(u.status in ("online", "offline") for u in urlhaus_list) or
+        bool(sender_whois and sender_whois.is_new)
+    )
+    all_links_clean = all(
+        s.status in ("ok", "first_scan") and not s.is_malicious and not s.is_suspicious
+        for s in scans
+    )
+    feeds_clean = (
+        not any(p.is_phishing for p in pt_list) and
+        not any(t.hit for t in tf_list) and
+        not any(u.status in ("online", "offline") for u in urlhaus_list) and
+        not mb_result.found
+    )
+    sender_is_clean = bool(
+        sender_whois and
+        not sender_whois.is_new
+    )
+    only_weak_trusted_link_noise = bool(trusted_or_related_links) and all(
+        not s.is_malicious and s.is_suspicious for s in trusted_or_related_links
+    ) and all(
+        (s in trusted_or_related_links) or (not s.is_malicious and not s.is_suspicious)
+        for s in scans
+    )
+
+    if trusted_sender and only_weak_trusted_link_noise:
+        suspicious_signals = False
+        link_suspicious = False
+
+    # We trust the LLM's semantic analysis for zero-day phishing without external IOC hits.
+    # However, if external threat intel CONFIRMS it's malicious, we upgrade it.
+    if confirmed_malicious and level != "MALICIOUS":
+        level = "MALICIOUS"
+        confidence = max(confidence, 0.90)
+
+    calibrated["threat_level"] = level
+    calibrated["confidence"] = max(0.0, min(confidence, 1.0))
+    if not isinstance(calibrated.get("key_findings"), list):
+        calibrated["key_findings"] = []
+    return calibrated
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
@@ -822,7 +1063,7 @@ async def deep_analyze(payload: EmailPayload):
 
     # ── 2. Unique domains from links ───────────────────────────────────────
     # Also include sender domain
-    sender_domain = payload.sender.email.split("@")[-1] if "@" in payload.sender.email else None
+    sender_domain = normalize_domain(payload.sender.email.split("@")[-1] if "@" in payload.sender.email else None)
     link_domains  = list({d for u in payload.links if (d := extract_domain(u))})
     if sender_domain and sender_domain not in link_domains:
         link_domains.insert(0, sender_domain)
@@ -843,8 +1084,8 @@ async def deep_analyze(payload: EmailPayload):
             tasks[f"tf_{d}"]  = check_threatfox(client, d, "domain")
 
         # Per-URL tasks (cap to 5 to stay within limits)
-        for u in payload.links[:5]:
-            safe_key = u.replace("://", "_").replace("/", "_")[:40]
+        for index, u in enumerate(payload.links[:5]):
+            safe_key = f"{index}_{u.replace('://', '_').replace('/', '_')[:40]}"
             tasks[f"pt_{safe_key}"] = check_phishtank(client, u)
             tasks[f"us_{safe_key}"] = urlscan_submit(client, u)
             tasks[f"uh_{safe_key}"] = check_urlhaus(client, u)
@@ -898,7 +1139,7 @@ async def deep_analyze(payload: EmailPayload):
 
     # ── 5. Claude synthesis ────────────────────────────────────────────────
     intel_summary = build_intel_summary(
-        whois_list, dns_list, geo_list, urlhaus_list, tf_list, pt_list, [mb_result]
+        sender_domain, whois_list, dns_list, geo_list, urlhaus_list, tf_list, pt_list, [mb_result]
     )
     try:
         analysis = await asyncio.to_thread(
@@ -908,6 +1149,9 @@ async def deep_analyze(payload: EmailPayload):
         raise HTTPException(500, f"Claude returned malformed JSON: {exc}")
     except Exception as exc:
         raise HTTPException(500, f"Claude analysis failed: {exc}")
+    analysis = calibrate_ai_analysis(
+        payload, analysis, link_scans, whois_list, dns_list, urlhaus_list, tf_list, pt_list, mb_result
+    )
 
     # ── 6. Return ──────────────────────────────────────────────────────────
     return DeepAnalysisResponse(
@@ -952,6 +1196,17 @@ async def analyze(payload: EmailPayload):
         raise HTTPException(500, f"Claude returned malformed JSON: {exc}")
     except Exception as exc:
         raise HTTPException(500, f"Claude analysis failed: {exc}")
+    analysis = calibrate_ai_analysis(
+        payload,
+        analysis,
+        link_scans,
+        [],
+        [],
+        [],
+        [],
+        [],
+        MalwareBazaarResult(),
+    )
 
     return AnalysisResponse(
         threat_level       = analysis.get("threat_level",       "SUSPICIOUS"),

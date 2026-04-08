@@ -105,6 +105,8 @@ btnRefresh.addEventListener("click", handleScanClick);
 async function handleScanClick() {
   if (isLoading) return;
   hideError();
+  lastScanData = null;
+  resetAiResultContent();
   setAiState("idle");
   socSections.classList.add("hidden");
   setLoadingState(true);
@@ -145,7 +147,7 @@ async function handleScanClick() {
 
       renderAiResult(data.ai);
       setAiState("result");
-      renderThreatBanner(data.ai.threat_level || "SUSPICIOUS");
+      renderThreatBanner(resolveDisplayedThreatLevel(data));
 
       if (data.link_scans?.length) applyVTBadgesToLinks(data.link_scans);
 
@@ -205,7 +207,7 @@ async function callDeepAndRender(payload) {
     await delay(150);
     renderAiResult(data.ai);
     setAiState("result");
-    renderThreatBanner(data.ai?.threat_level || "SUSPICIOUS");
+    renderThreatBanner(resolveDisplayedThreatLevel(data));
     if (data.link_scans?.length) applyVTBadgesToLinks(data.link_scans);
     renderSOCSections(data);
     socSections.classList.remove("hidden");
@@ -260,7 +262,7 @@ function renderEmailData(payload) {
     extractTimeEl.textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  renderThreatBanner(assessThreatLevel(payload));
+  renderThreatBannerPending();
 
   if (payload.links?.length > 0) {
     renderLinks(payload.links);
@@ -296,6 +298,96 @@ function renderAiResult(ai) {
     aiConfBadge.textContent = `${pct}% confidence`;
     aiConfBadge.classList.remove("hidden");
   }
+}
+
+function resetAiResultContent() {
+  aiSummaryText.textContent = "";
+  aiFindingsList.innerHTML = "";
+  aiActionText.textContent = "";
+  aiConfBadge.textContent = "";
+  aiConfBadge.classList.add("hidden");
+}
+
+function normalizeThreatLevel(level) {
+  const normalized = String(level || "").trim().toUpperCase();
+  return ["SAFE", "SUSPICIOUS", "MALICIOUS"].includes(normalized) ? normalized : null;
+}
+
+function resolveAiNarrativeThreatLevel(ai) {
+  const text = [
+    ai?.summary || "",
+    ...(ai?.key_findings || []),
+    ai?.recommended_action || "",
+  ].join(" ").toLowerCase();
+
+  if (!text.trim()) return null;
+
+  const explicitMalicious = [
+    /\bthis email is (?:a )?phishing\b/,
+    /\bappears to be (?:a )?phishing\b/,
+    /\blooks like (?:a )?phishing\b/,
+    /\bphishing attack\b/,
+    /\bcredential theft\b/,
+    /\bsteal your (?:login|payment|account|banking)?\s*credentials\b/,
+    /\bmalware\b/,
+    /\bfraud(?:ulent)?\b/,
+    /\bscam\b/,
+    /\bmalicious\b/,
+  ].some(pattern => pattern.test(text));
+  if (explicitMalicious) return "MALICIOUS";
+
+  const explicitSafe = [
+    /\bno threat\b/,
+    /\bno threats\b/,
+    /\ball checks clean\b/,
+    /\bno confirmed threat\b/,
+    /\bdid not confirm (?:a )?threat\b/,
+    /\bno concrete threat indicators\b/,
+    /\bsafe\b/,
+    /\bclean\b/,
+    /\blegitimate\b/,
+  ].some(pattern => pattern.test(text));
+  if (explicitSafe) return "SAFE";
+
+  const explicitSuspicious = [
+    /\bsuspicious\b/,
+    /\brisk signals?\b/,
+    /\buse caution\b/,
+    /\bverify\b/,
+    /\bunknown\b/,
+    /\bunconfirmed\b/,
+    /\bnewly scanned\b/,
+    /\blimited reputation\b/,
+    /\bbe careful\b/,
+  ].some(pattern => pattern.test(text));
+  if (explicitSuspicious) return "SUSPICIOUS";
+
+  return null;
+}
+
+function resolveDisplayedThreatLevel(data) {
+  const aiLevel = normalizeThreatLevel(data?.ai?.threat_level);
+
+  const maliciousEvidence =
+    (data?.link_scans || []).some(s => s.is_malicious || (s.malicious || 0) >= 2) ||
+    (data?.phishtank || []).some(p => p.is_phishing) ||
+    (data?.urlhaus || []).some(u => u.is_malicious || u.status === "online") ||
+    (data?.malware_bazaar || []).some(m => m.found) ||
+    (data?.threatfox || []).some(t => t.hit && (t.confidence || 0) >= 70);
+
+  if (maliciousEvidence) return "MALICIOUS";
+  if (aiLevel) return aiLevel;
+
+  const aiNarrativeLevel = resolveAiNarrativeThreatLevel(data?.ai);
+  if (aiNarrativeLevel) return aiNarrativeLevel;
+
+  const suspiciousEvidence =
+    (data?.link_scans || []).some(s => s.is_suspicious || (s.suspicious || 0) >= 2 || s.status === "first_scan") ||
+    (data?.urlhaus || []).some(u => u.status === "offline") ||
+    (data?.threatfox || []).some(t => t.hit) ||
+    (data?.whois_info || []).some(w => w.is_new);
+
+  return suspiciousEvidence ? "SUSPICIOUS" : "SAFE";
 }
 
 // ── SOC Intelligence Sections ─────────────────────────────────────────────────
@@ -579,7 +671,7 @@ function renderURLScans(urlscanList) {
 
   if (submitted.length === 0) {
     const noKey = urlscanList.some(u => u.status === "no_key");
-    container.innerHTML = `<p class="tl-intel-empty">${
+    container.textContent = `<p class="tl-intel-empty">${
       noKey ? "Add URLSCAN_API_KEY to server/.env to enable URL scanning." : "No scans submitted."
     }</p>`;
     return;
@@ -659,12 +751,27 @@ function renderThreatBanner(level) {
     MALICIOUS:  { banner: "tl-threat-banner--malicious",  badge: "tl-threat-badge--malicious",  icon: "🚨", label: "Potential Threat Detected" },
   };
 
-  const c = cfg[level] || cfg.SAFE;
+  const c = cfg[level] || cfg.SUSPICIOUS;
   threatBanner.classList.add(c.banner);
   threatBadge.classList.add(c.badge);
   threatIcon.textContent     = c.icon;
   threatLevelTxt.textContent = c.label;
-  threatBadge.textContent    = level;
+  threatBadge.textContent    = normalizeThreatLevel(level) || "SUSPICIOUS";
+}
+
+function renderThreatBannerPending() {
+  threatBanner.classList.remove(
+    "tl-threat-banner--safe", "tl-threat-banner--suspicious", "tl-threat-banner--malicious"
+  );
+  threatBadge.classList.remove(
+    "tl-threat-badge--safe", "tl-threat-badge--suspicious", "tl-threat-badge--malicious"
+  );
+
+  threatBanner.classList.add("tl-threat-banner--suspicious");
+  threatBadge.classList.add("tl-threat-badge--suspicious");
+  threatIcon.textContent = "⏳";
+  threatLevelTxt.textContent = "Awaiting Deep Scan";
+  threatBadge.textContent = "PENDING";
 }
 
 // ── Links List ────────────────────────────────────────────────────────────────
@@ -679,7 +786,7 @@ function renderLinks(links) {
     li.className   = "tl-link-item";
     li.dataset.url = href;
 
-    li.innerHTML = `
+    li.textContent = `
       <svg class="${suspicious ? "suspect" : "normal"}" xmlns="http://www.w3.org/2000/svg"
            viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -808,7 +915,7 @@ function buildHistoryEntry(payload, deepData) {
     timestamp:    new Date().toISOString(),
     sender:       { name: payload.sender?.name || "", email: payload.sender?.email || "" },
     subject:      payload.subject || "No Subject",
-    threat_level: deepData.ai?.threat_level || "SUSPICIOUS",
+    threat_level: resolveDisplayedThreatLevel(deepData),
     confidence:   deepData.ai?.confidence   || 0,
     summary:      deepData.ai?.summary      || "",
     key_findings: (deepData.ai?.key_findings || []).slice(0, 3),
@@ -873,7 +980,7 @@ function renderHistory(history) {
       hour: "2-digit", minute: "2-digit",
     });
 
-    item.innerHTML = `
+    item.textContent = `
       <div class="tl-history-item-header">
         <span class="tl-history-badge tl-history-badge--${levelCls}">${entry.threat_level}</span>
         <span class="tl-history-time">${dateStr}</span>
