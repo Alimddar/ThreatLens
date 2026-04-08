@@ -1,4 +1,8 @@
-<br># ThreatLens
+<div align="center">
+  <img src="assets/banner.png" alt="ThreatLens" width="100%" />
+</div>
+
+<br>
 
 > **AI-powered phishing & malware detection for Gmail — built for security-conscious professionals and SOC analysts.**
 
